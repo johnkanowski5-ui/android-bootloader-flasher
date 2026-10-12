@@ -1,4 +1,4 @@
-# Android Bootloader Flasher v1.0.0
+# Android Bootloader Flasher v1.1.0
 
 ## Release Notes
 
@@ -14,6 +14,7 @@ Android Bootloader Flasher is a Windows-based utility for Android device workflo
 - Real-time activity log
 - Windows installer support
 - Safety and installation documentation
+- Improved guidance and messaging for troubleshooting and support
 
 ### Requirements
 - Windows 10/11
@@ -27,15 +28,13 @@ Android still requires the user to manually enable Developer Options, turn on US
 ### Safety Warning
 Bootloader flashing is risky and can permanently damage a phone if used incorrectly. Only use files intended for your exact device model and vendor. Do not disconnect the USB cable during flashing.
 
-### Changelog
-- Initial release
-- Motorola-aware workflow
-- Samsung Download Mode guidance
-- USB debugging wizard
-- ADB + Fastboot detection
-- Bootloader image selection
-- Activity log panel
-- Installer build support
+### Changelog for v1.1.0
+- Improved device status and troubleshooting messaging
+- Better Motorola and Samsung workflow guidance
+- Clearer bootloader flash warnings and confirmation flow
+- Improved log output for app support and issue triage
+- Added version-tracking notes and release planning
+- Updated documentation for version clarity and release readiness
 
 ### Installation
 1. Download the installer or ZIP package from the GitHub Release assets
