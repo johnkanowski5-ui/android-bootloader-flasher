@@ -1,4 +1,6 @@
 # Release v1.0.0 - Download and Install Guide
+ption B
+
 
 ## Download
 
@@ -24,6 +26,10 @@ Choose one of the download options below:
 2. Double-click to run
 3. Click "Next" through the installer
 4. Click "Install"
+:wa
+:SaveSession! F6ACBB76-28EF-4870-970A-195C071C6064
+
+
 5. Check "Launch Android Bootloader Flasher"
 6. Click "Finish"
 
