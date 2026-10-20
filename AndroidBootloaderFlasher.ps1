@@ -5,6 +5,8 @@ $script:ADBPath = $null
 $script:FastbootPath = $null
 $script:SelectedImage = ""
 $script:DeviceConnected = $false
+$script:DeviceSerial = $null
+$script:DeviceModel = "Unknown"
 
 function Find-PlatformTools {
     $paths = @(
@@ -112,60 +114,173 @@ Important: Android requires the user to approve the PC connection before ADB can
 
 function CheckDevice {
     $result = Run-Command -FilePath $script:ADBPath -Arguments @("devices")
-    if ($result.Output -match "device\s*$") {
+    $deviceLines = @()
+    foreach ($line in ($result.Output -split '\r?\n')) {
+        if ($line -match '^\s*\S+\s+device\s*$') {
+            $deviceLines += $line.Trim()
+        }
+    }
+
+    if ($result.ExitCode -eq 0 -and $deviceLines.Count -eq 1) {
+        $serialMatch = [regex]::Match($deviceLines[0], '^\s*(\S+)\s+device\s*$')
+        $script:DeviceSerial = $serialMatch.Groups[1].Value
+        $modelResult = Run-Command -FilePath $script:ADBPath -Arguments @('-s', $script:DeviceSerial, 'shell', 'getprop', 'ro.product.model')
+        $script:DeviceModel = $modelResult.Output.Trim()
+        if (-not $script:DeviceModel) {
+            $script:DeviceModel = 'Unknown'
+        }
+
         $script:DeviceConnected = $true
-        UpdateStatus "Device connected" ([System.Drawing.Color]::DarkGreen)
-        Log-Message "Device detected."
+        UpdateStatus 'Device connected' ([System.Drawing.Color]::DarkGreen)
+        Log-Message ('Device detected. Serial: ' + $script:DeviceSerial)
+        Log-Message ('Model reported by Android: ' + $script:DeviceModel)
         Log-Message $result.Output
     }
     else {
         $script:DeviceConnected = $false
-        UpdateStatus "No device detected" ([System.Drawing.Color]::DarkRed)
-        Log-Message "No device detected. Enable USB debugging and approve the connection on the phone."
+        $script:DeviceSerial = $null
+        $script:DeviceModel = 'Unknown'
+        UpdateStatus 'No unique device detected' ([System.Drawing.Color]::DarkRed)
+        if ($deviceLines.Count -gt 1) {
+            Log-Message 'Connect exactly one authorized Android device before continuing.'
+        }
+        else {
+            Log-Message 'No authorized device detected. Enable USB debugging and approve the connection on the phone.'
+        }
         Log-Message $result.Output
     }
 }
 
+function GetFastbootSerials {
+    $result = Run-Command -FilePath $script:FastbootPath -Arguments @('devices')
+    $serials = @()
+    foreach ($line in ($result.Output -split '\r?\n')) {
+        $match = [regex]::Match($line, '^\s*(\S+)\s+fastboot\s*$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($match.Success) {
+            $serials += $match.Groups[1].Value
+        }
+    }
+    return $serials
+}
+
 function RebootToBootloader {
-    if (-not $script:DeviceConnected) {
-        Log-Message "No device connected. Connect and authorize the phone first."
+    if (-not $script:DeviceConnected -or -not $script:DeviceSerial) {
+        Log-Message 'No uniquely identified device. Click Check Device and connect exactly one authorized phone first.'
         return
     }
 
-    Log-Message "Rebooting phone into bootloader..."
-    $result = Run-Command -FilePath $script:ADBPath -Arguments @("reboot", "bootloader")
+    Log-Message ('Rebooting device ' + $script:DeviceSerial + ' into bootloader...')
+    $result = Run-Command -FilePath $script:ADBPath -Arguments @('-s', $script:DeviceSerial, 'reboot', 'bootloader')
     Log-Message $result.Output
-    Start-Sleep -Seconds 3
+    if ($result.ExitCode -ne 0) {
+        Log-Message 'ADB could not reboot the selected device to bootloader mode.'
+        return
+    }
 
-    $check = Run-Command -FilePath $script:FastbootPath -Arguments @("devices")
-    if ($check.Output -match "fastboot") {
-        UpdateStatus "In bootloader mode" ([System.Drawing.Color]::DarkOrange)
-        Log-Message "Device is visible in fastboot."
+    Start-Sleep -Seconds 5
+    $serials = @(GetFastbootSerials)
+    if ($serials.Count -eq 1 -and $serials[0] -eq $script:DeviceSerial) {
+        UpdateStatus 'In bootloader mode' ([System.Drawing.Color]::DarkOrange)
+        Log-Message ('Fastboot device verified: ' + $serials[0])
     }
     else {
-        Log-Message "Device is not yet visible in fastboot."
-        Log-Message $check.Output
+        UpdateStatus 'Fastboot device not verified' ([System.Drawing.Color]::DarkRed)
+        Log-Message 'Expected exactly one Fastboot device with the same serial as the Android device. Flashing will remain blocked.'
+        Log-Message ($serials -join ', ')
     }
 }
 
 function GetUnlockStatus {
-    $result = Run-Command -FilePath $script:FastbootPath -Arguments @("getvar", "unlockability")
+    $result = Run-Command -FilePath $script:FastbootPath -Arguments @('-s', $script:DeviceSerial, 'getvar', 'unlocked')
     Log-Message $result.Output
 
-    if ($result.Output -match "unlocked") {
-        Log-Message "Bootloader is unlocked."
+    if ($result.ExitCode -eq 0 -and $result.Output -match '(?im)^\s*(?:\(bootloader\)\s*)?(?:device\s+)?unlocked:\s*(?:yes|true|1)\s*$') {
+        Log-Message 'Fastboot positively reported that the bootloader is unlocked.'
+        return $true
     }
-    elseif ($result.Output -match "locked") {
-        Log-Message "Bootloader is locked. OEM unlock may be required."
+
+    if ($result.Output -match '(?im)^\s*(?:\(bootloader\)\s*)?(?:device\s+)?unlocked:\s*(?:no|false|0)\s*$') {
+        Log-Message 'Fastboot reported a locked bootloader. Flashing is blocked.'
     }
     else {
-        Log-Message "Could not determine bootloader unlock status."
+        Log-Message 'Could not positively verify that the bootloader is unlocked. Flashing is blocked.'
     }
+    return $false
+}
+
+function ConfirmFlash {
+    param(
+        [string]$Serial,
+        [string]$Model,
+        [string]$ImagePath
+    )
+
+    $lineBreak = [Environment]::NewLine
+    $expectedConfirmation = 'FLASH ' + $Serial
+    $confirmationForm = New-Object System.Windows.Forms.Form
+    $confirmationForm.Text = 'Confirm Bootloader Flash'
+    $confirmationForm.Size = New-Object System.Drawing.Size(700, 360)
+    $confirmationForm.StartPosition = 'CenterParent'
+    $confirmationForm.FormBorderStyle = 'FixedDialog'
+    $confirmationForm.MaximizeBox = $false
+    $confirmationForm.MinimizeBox = $false
+
+    $warningLabel = New-Object System.Windows.Forms.Label
+    $warningLabel.Location = New-Object System.Drawing.Point(20, 20)
+    $warningLabel.Size = New-Object System.Drawing.Size(640, 155)
+    $warningLabel.Text = ('Android-reported model (informational): ' + $Model + $lineBreak +
+        'Fastboot serial: ' + $Serial + $lineBreak +
+        'Image: ' + [System.IO.Path]::GetFileName($ImagePath) + $lineBreak + $lineBreak +
+        'This app cannot verify that the image is compatible with this exact model. Check the device and image against official manufacturer guidance. An incompatible image can permanently damage the device.' + $lineBreak +
+        'To continue, type exactly: ' + $expectedConfirmation)
+
+    $confirmationInput = New-Object System.Windows.Forms.TextBox
+    $confirmationInput.Name = 'confirmationInput'
+    $confirmationInput.Location = New-Object System.Drawing.Point(20, 195)
+    $confirmationInput.Size = New-Object System.Drawing.Size(440, 28)
+
+    $confirmButton = New-Object System.Windows.Forms.Button
+    $confirmButton.Text = 'Flash Bootloader'
+    $confirmButton.Location = New-Object System.Drawing.Point(475, 192)
+    $confirmButton.Size = New-Object System.Drawing.Size(165, 34)
+    $confirmButton.Tag = $expectedConfirmation
+    $confirmButton.Add_Click({
+        $dialog = $this.FindForm()
+        $entry = $dialog.Controls['confirmationInput']
+        if ($entry.Text -ceq [string]$this.Tag) {
+            $dialog.DialogResult = [System.Windows.Forms.DialogResult]::OK
+            $dialog.Close()
+        }
+        else {
+            [void][System.Windows.Forms.MessageBox]::Show('The confirmation text did not match. No flash was started.', 'Confirmation required', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        }
+    })
+
+    $cancelButton = New-Object System.Windows.Forms.Button
+    $cancelButton.Text = 'Cancel'
+    $cancelButton.Location = New-Object System.Drawing.Point(475, 238)
+    $cancelButton.Size = New-Object System.Drawing.Size(165, 34)
+    $cancelButton.Add_Click({
+        $dialog = $this.FindForm()
+        $dialog.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+        $dialog.Close()
+    })
+
+    $confirmationForm.AcceptButton = $confirmButton
+    $confirmationForm.CancelButton = $cancelButton
+    $confirmationForm.Controls.Add($warningLabel)
+    $confirmationForm.Controls.Add($confirmationInput)
+    $confirmationForm.Controls.Add($confirmButton)
+    $confirmationForm.Controls.Add($cancelButton)
+
+    $result = $confirmationForm.ShowDialog($form)
+    $confirmationForm.Dispose()
+    return ($result -eq [System.Windows.Forms.DialogResult]::OK)
 }
 
 function SelectImage {
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
-    $dialog.Filter = "Bootloader images (*.img;*.bin)|*.img;*.bin|All files (*.*)|*.*"
+    $dialog.Filter = "Bootloader images (*.img;*.bin)|*.img;*.bin"
     $dialog.Title = "Select Bootloader Image"
 
     if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
@@ -176,42 +291,82 @@ function SelectImage {
 }
 
 function FlashBootloader {
-    if (-not $script:DeviceConnected) {
-        Log-Message "No device connected. Connect and authorize the phone first."
+    if (-not $script:DeviceConnected -or -not $script:DeviceSerial) {
+        Log-Message 'No uniquely identified device. Click Check Device and connect exactly one authorized phone first.'
         return
     }
 
-    if (-not $script:SelectedImage -or -not (Test-Path $script:SelectedImage)) {
-        Log-Message "Please select a valid bootloader image before flashing."
+    if (-not $script:SelectedImage -or -not (Test-Path -LiteralPath $script:SelectedImage)) {
+        Log-Message 'Please select a valid bootloader image before flashing.'
         return
     }
 
-    $check = Run-Command -FilePath $script:FastbootPath -Arguments @("devices")
-    if ($check.Output -notmatch "fastboot") {
-        Log-Message "The device is not visible in fastboot. Reboot to bootloader mode first."
+    $extension = [System.IO.Path]::GetExtension($script:SelectedImage).ToLowerInvariant()
+    if ($extension -notin @('.img', '.bin')) {
+        Log-Message 'Only .img and .bin image files are accepted.'
         return
     }
 
-    GetUnlockStatus
-    Log-Message "Flashing bootloader: $script:SelectedImage"
+    $serials = @(GetFastbootSerials)
+    if ($serials.Count -ne 1) {
+        Log-Message 'Exactly one Fastboot device must be connected. Flashing is blocked.'
+        return
+    }
 
-    $flashResult = Run-Command -FilePath $script:FastbootPath -Arguments @("flash", "bootloader", $script:SelectedImage)
+    $fastbootSerial = $serials[0]
+    if ($fastbootSerial -ne $script:DeviceSerial) {
+        Log-Message ('Fastboot serial does not match the checked Android device (' + $script:DeviceSerial + '). Flashing is blocked.')
+        return
+    }
+
+    if (-not (GetUnlockStatus)) {
+        return
+    }
+
+    if (-not (ConfirmFlash -Serial $fastbootSerial -Model $script:DeviceModel -ImagePath $script:SelectedImage)) {
+        Log-Message 'Flash cancelled. No image was written.'
+        return
+    }
+
+    $serials = @(GetFastbootSerials)
+    if ($serials.Count -ne 1 -or $serials[0] -ne $fastbootSerial) {
+        Log-Message 'Fastboot device changed or is ambiguous after confirmation. Flashing is blocked.'
+        return
+    }
+
+    if (-not (GetUnlockStatus)) {
+        return
+    }
+
+    Log-Message ('Flashing bootloader on device ' + $fastbootSerial + ': ' + $script:SelectedImage)
+    $flashResult = Run-Command -FilePath $script:FastbootPath -Arguments @('-s', $fastbootSerial, 'flash', 'bootloader', $script:SelectedImage)
     Log-Message $flashResult.Output
 
     if ($flashResult.ExitCode -eq 0) {
-        UpdateStatus "Bootloader flash successful" ([System.Drawing.Color]::DarkGreen)
-        Log-Message "Bootloader flashed successfully."
+        UpdateStatus 'Bootloader flash successful' ([System.Drawing.Color]::DarkGreen)
+        Log-Message 'Bootloader flashed successfully.'
     }
     else {
-        UpdateStatus "Bootloader flash failed" ([System.Drawing.Color]::DarkRed)
-        Log-Message "Bootloader flash failed. Check the image, device model, and unlock state."
+        UpdateStatus 'Bootloader flash failed' ([System.Drawing.Color]::DarkRed)
+        Log-Message 'Bootloader flash failed. Verify device compatibility, image, and unlock state.'
     }
 }
 
 function RebootSystem {
-    $result = Run-Command -FilePath $script:FastbootPath -Arguments @("reboot")
+    if (-not $script:DeviceSerial) {
+        Log-Message 'No checked device serial is available.'
+        return
+    }
+
+    $serials = @(GetFastbootSerials)
+    if ($serials.Count -ne 1 -or $serials[0] -ne $script:DeviceSerial) {
+        Log-Message 'The checked device is not the only visible Fastboot device. Reboot was not sent.'
+        return
+    }
+
+    $result = Run-Command -FilePath $script:FastbootPath -Arguments @('-s', $script:DeviceSerial, 'reboot')
     Log-Message $result.Output
-    UpdateStatus "Rebooting to system" ([System.Drawing.Color]::DarkOrange)
+    UpdateStatus 'Rebooting to system' ([System.Drawing.Color]::DarkOrange)
 }
 
 $form = New-Object System.Windows.Forms.Form
