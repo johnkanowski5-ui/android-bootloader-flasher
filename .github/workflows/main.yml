@@ -1,1 +1,48 @@
-.\build-installer.ps1
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --yes --no-progress
+
+      - name: Parse PowerShell scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $scripts = Get-ChildItem -Path . -Filter *.ps1 -Recurse
+          if (-not $scripts) {
+            throw "No PowerShell scripts were found."
+          }
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error ("{0}: {1}" -f $script.Name, $_.Message) }
+              throw ("PowerShell parse failed for {0}" -f $script.Name)
+            }
+          }
+
+      - name: Build installer and portable ZIP
+        shell: powershell
+        run: .\build-installer.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AndroidBootloaderFlasher-1.1.0
+          path: dist/*
+          if-no-files-found: error

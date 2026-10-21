@@ -2,7 +2,7 @@
 
 [Setup]
 AppName=Android Bootloader Flasher
-AppVersion=1.0.0
+AppVersion=1.1.0
 DefaultDirName={commonpf64}\AndroidBootloaderFlasher
 DefaultGroupName=Android Bootloader Flasher
 OutputBaseFilename=AndroidBootloaderFlasherSetup

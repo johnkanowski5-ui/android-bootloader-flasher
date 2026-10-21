@@ -3,14 +3,13 @@
 ## Release Notes
 
 ### Overview
-Android Bootloader Flasher is a Windows-based utility for Android device workflows, with vendor-aware guidance for Motorola and Samsung devices.
+Android Bootloader Flasher is a Windows PowerShell utility for a generic ADB and Fastboot workflow. It does not implement vendor-specific flashing procedures such as Samsung Download Mode, Odin, or Heimdall.
 
 ### Included
 - USB debugging setup wizard
 - Device detection via ADB
-- Motorola Fastboot workflow
-- Samsung Download Mode guidance
-- Generic Android bootloader support
+- Generic Fastboot bootloader workflow
+- Fail-closed unlock-status checks, serial matching, and typed flash confirmation
 - Real-time activity log
 - Windows installer support
 - Safety and installation documentation
@@ -30,14 +29,15 @@ Bootloader flashing is risky and can permanently damage a phone if used incorrec
 
 ### Changelog for v1.1.0
 - Improved device status and troubleshooting messaging
-- Better Motorola and Samsung workflow guidance
+- Added portable ZIP packaging and Windows CI build validation
+- Clarified standard Fastboot-only support and unsupported vendor-specific modes
 - Clearer bootloader flash warnings and confirmation flow
 - Improved log output for app support and issue triage
 - Added version-tracking notes and release planning
 - Updated documentation for version clarity and release readiness
 
 ### Installation
-1. Download the installer or ZIP package from the GitHub Release assets
+1. Download the installer or ZIP from GitHub Releases when a maintainer publishes them; the build script creates local artifacts only
 2. Install Android Platform Tools if not already installed
 3. Enable USB debugging on the phone
 4. Approve the PC connection on the phone
